@@ -144,3 +144,6 @@ grounding/version.py
 
 vis/
 tmp/
+.asset/zed2.png
+*.onnx
+weights/

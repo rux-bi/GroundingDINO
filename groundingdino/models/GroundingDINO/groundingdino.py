@@ -279,8 +279,8 @@ class GroundingDINO(nn.Module):
         # import ipdb; ipdb.set_trace()
         if isinstance(samples, (list, torch.Tensor)):
             samples = nested_tensor_from_tensor_list(samples)
-        if not hasattr(self, 'features') or not hasattr(self, 'poss'):
-            self.set_image_tensor(samples)
+        # if not hasattr(self, 'features') or not hasattr(self, 'poss'):
+        self.set_image_tensor(samples)
 
         srcs = []
         masks = []

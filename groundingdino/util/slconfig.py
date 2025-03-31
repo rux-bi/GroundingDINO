@@ -263,7 +263,7 @@ class SLConfig(object):
         def _contain_invalid_identifier(dict_str):
             contain_invalid_identifier = False
             for key_name in dict_str:
-                contain_invalid_identifier |= not str(key_name).isidentifier()
+                contain_invalid_identifier = contain_invalid_identifier | (not str(key_name).isidentifier())
             return contain_invalid_identifier
 
         def _format_dict(input_dict, outest_level=False):
