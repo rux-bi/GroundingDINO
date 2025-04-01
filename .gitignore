@@ -147,3 +147,4 @@ tmp/
 .asset/zed2.png
 *.onnx
 weights/
+.asset/trt_cache/

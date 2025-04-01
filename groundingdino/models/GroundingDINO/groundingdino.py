@@ -118,6 +118,9 @@ class GroundingDINO(nn.Module):
         # special tokens
         self.specical_tokens = self.tokenizer.convert_tokens_to_ids(["[CLS]", "[SEP]", ".", "?"])
 
+        # image normalization
+        self.norm_mean = nn.Parameter(torch.tensor([0.485, 0.456, 0.406]).view(1, -1, 1, 1), requires_grad=False)
+        self.norm_std = nn.Parameter(torch.tensor([0.229, 0.224, 0.225]).view(1, -1, 1, 1), requires_grad=False)
         # prepare input projection layers
         if num_feature_levels > 1:
             num_backbone_outs = len(backbone.num_channels)
@@ -278,6 +281,7 @@ class GroundingDINO(nn.Module):
 
         # import ipdb; ipdb.set_trace()
         if isinstance(samples, (list, torch.Tensor)):
+            samples = (samples - self.norm_mean) / self.norm_std
             samples = nested_tensor_from_tensor_list(samples)
         # if not hasattr(self, 'features') or not hasattr(self, 'poss'):
         self.set_image_tensor(samples)
