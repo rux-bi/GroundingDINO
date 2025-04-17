@@ -5,7 +5,7 @@ import sys
 import numpy as np
 import torch
 from PIL import Image, ImageDraw, ImageFont
-
+import torchvision.transforms.v2 as T2
 import groundingdino.datasets.transforms as T
 from groundingdino.models import build_model
 from groundingdino.util import box_ops
@@ -61,7 +61,7 @@ def load_image(image_path):
 
     transform = T.Compose(
         [
-            # T.RandomResize([800], max_size=1333),
+            T2.Resize((360, 640)),
             T.ToTensor(),
             # T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
         ]

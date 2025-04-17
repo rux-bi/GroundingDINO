@@ -12,6 +12,12 @@ import onnxruntime as ort
 import numpy as np
 from torch.utils.benchmark import Timer, Measurement
 
+class TensorContainer(nn.Module):
+    def __init__(self, tensor_dict):
+        super().__init__()
+        for key, value in tensor_dict.items():
+            self.register_buffer(key, value)
+
 class ModelWrapper(nn.Module):
     def __init__(self, original_model, box_threshold=0.3, text_threshold=0.25):
         super().__init__()
@@ -31,13 +37,12 @@ class ModelWrapper(nn.Module):
         
         # Partition based on confidence
         max_conf = logits.max(dim=1)[0]
+        conf_indices = torch.argsort(max_conf, descending=True)
         conf_mask = max_conf > self.box_threshold
-        num_confident = conf_mask.sum()
+        num_confident = conf_mask.sum().reshape([1, 1])
         # Sort based on confidence
-        conf_indices = torch.argsort(conf_mask.to(torch.float32), descending=True)
-        logits = logits[conf_indices]  # Rearrange logits
-        boxes = boxes[conf_indices]    # Rearrange boxes
-        return logits, boxes, num_confident
+        # conf_indices = torch.argsort(conf_mask.to(torch.float32), descending=True)
+        return logits[conf_indices], boxes[conf_indices], num_confident, max_conf[conf_indices]
     
     def postprocess(self, logits, boxes, num_dets, input_ids_raw):
         pred_phrases = []
@@ -97,7 +102,7 @@ def tokenize_text_prompt(tokenizer, caption, max_text_len, device):
         "attention_mask": tokenized["attention_mask"].to(bool),
         "token_type_ids": tokenized["token_type_ids"],
         "position_ids": position_ids,
-        "text_self_attention_masks": text_self_attention_masks
+        "text_token_mask": text_self_attention_masks
     }
 
 
@@ -108,14 +113,14 @@ def export_onnx(model_cpu, model, image, caption, export_onnx_model, box_thresho
     image = image.to(device)    # encoder texts
     tokenized = tokenize_text_prompt(model.tokenizer, caption, model.max_text_len, device)
     dynamic_axes={
-       "input_ids": {0: "batch_size", 1: "seq_len"},
-       "attention_mask": {0: "batch_size", 1: "seq_len"},
-       "position_ids": {0: "batch_size", 1: "seq_len"},
-       "token_type_ids": {0: "batch_size", 1: "seq_len"},
-       "text_token_mask": {0: "batch_size", 1: "seq_len", 2: "seq_len"},       
-       "img": {0: "batch_size"},
-       "logits": {0: "batch_size"},
-       "boxes": {0: "batch_size"},
+       "input_ids": {1: "seq_len"},
+       "attention_mask": {1: "seq_len"},
+       "position_ids": {1: "seq_len"},
+       "token_type_ids": {1: "seq_len"},
+       "text_token_mask": {1: "seq_len", 2: "seq_len"},       
+    #    "img": {0: "batch_size"},
+    #    "logits": {0: "batch_size"},
+    #    "boxes": {0: "batch_size"},
     }
     #export onnx model
     onnx_path = "/offboard/GroundingDINO/.asset/grounded.onnx"
@@ -127,15 +132,15 @@ def export_onnx(model_cpu, model, image, caption, export_onnx_model, box_thresho
             attention_mask_cpu = tokenized["attention_mask"].cpu().to(bool)
             position_ids_cpu = tokenized["position_ids"].cpu()
             token_type_ids_cpu = tokenized["token_type_ids"].cpu()
-            text_self_attention_masks_cpu = tokenized["text_self_attention_masks"].cpu()
+            text_self_attention_masks_cpu = tokenized["text_token_mask"].cpu()
             
-            logits, boxes, _ = model_wrapper(image_cpu, input_ids_cpu, attention_mask_cpu, position_ids_cpu, token_type_ids_cpu, text_self_attention_masks_cpu)
+            logits, boxes, _, _ = model_wrapper(image_cpu, input_ids_cpu, attention_mask_cpu, position_ids_cpu, token_type_ids_cpu, text_self_attention_masks_cpu)
             torch.onnx.export(
                 model_wrapper,
                 f=onnx_path,
                 args=(image_cpu, input_ids_cpu, attention_mask_cpu, position_ids_cpu, token_type_ids_cpu, text_self_attention_masks_cpu),
                 input_names=["img" , "input_ids", "attention_mask", "position_ids", "token_type_ids", "text_token_mask"],
-                output_names=["logits", "boxes", "num_dets"],
+                output_names=["logits", "boxes", "num_dets", "max_conf"],
                 dynamic_axes=dynamic_axes,
                 do_constant_folding=True,
                 export_params=True, 
@@ -146,12 +151,16 @@ def export_onnx(model_cpu, model, image, caption, export_onnx_model, box_thresho
         print('Model was successfully converted to ONNX format.')
     
     trt_cache_path = "/offboard/GroundingDINO/.asset/trt_cache"
+    seq_len = 34
     providers = [
         ('TensorrtExecutionProvider', {
-            # 'device_id': 0,                       # Select GPU to execute
+            'device_id': 0,                     # Select GPU to execute
             "trt_engine_cache_enable": True,
             'trt_engine_cache_path': trt_cache_path,
             'trt_fp16_enable': True,              # Enable FP16 precision for faster inference  
+            'trt_profile_opt_shapes': f"input_ids:1x{seq_len},attention_mask:1x{seq_len},position_ids:1x{seq_len},token_type_ids:1x{seq_len},text_token_mask:1x{seq_len}x{seq_len}",
+            'trt_profile_min_shapes': "input_ids:1x1,attention_mask:1x1,position_ids:1x1,token_type_ids:1x1,text_token_mask:1x1x1",
+            'trt_profile_max_shapes': "input_ids:1x256,attention_mask:1x256,position_ids:1x256,token_type_ids:1x256,text_token_mask:1x256x256",
             # 'trt_layer_norm_fp32_fallback': True, 
         }),
     ]
@@ -163,24 +172,32 @@ def export_onnx(model_cpu, model, image, caption, export_onnx_model, box_thresho
     io_binding = sess.io_binding()
     device_type=image.device.type
     image = image[None]
+    cached_token_path = "/offboard/GroundingDINO/.asset/trt_cache/tokenized.pt"
+    tensor_dict = {key: t.cpu() for key, t in tokenized.items()}
+
+    # container = TensorContainer(tensor_dict)
+    torch.save(tensor_dict, cached_token_path)
     binded_logits = torch.zeros((model.num_queries, model.max_text_len), dtype=torch.float32, device='cuda')
     binded_boxes  = torch.zeros((model.num_queries, 4), dtype=torch.float32, device='cuda')
     binded_num_dets = torch.zeros((1,), dtype=torch.int64, device='cuda')
+    binded_max_conf = torch.zeros((model.num_queries,), dtype=torch.float32, device='cuda')
     io_binding.bind_input(name='img', device_type=device_type, device_id=0, element_type=np.float32, shape=image.shape, buffer_ptr=image.data_ptr())
     io_binding.bind_input(name='input_ids', device_type=device_type, device_id=0, element_type=np.int64, shape=tokenized["input_ids"].shape, buffer_ptr=tokenized["input_ids"].data_ptr())
     io_binding.bind_input(name='attention_mask', device_type=device_type, device_id=0, element_type=bool, shape=tokenized["attention_mask"].shape, buffer_ptr=tokenized["attention_mask"].data_ptr())
     io_binding.bind_input(name='position_ids', device_type=device_type, device_id=0, element_type=np.int64, shape=tokenized["position_ids"].shape, buffer_ptr=tokenized["position_ids"].data_ptr())
     io_binding.bind_input(name='token_type_ids', device_type=device_type, device_id=0, element_type=np.int64, shape=tokenized["token_type_ids"].shape, buffer_ptr=tokenized["token_type_ids"].data_ptr())
-    io_binding.bind_input(name='text_token_mask', device_type=device_type, device_id=0, element_type=bool, shape=tokenized["text_self_attention_masks"].shape, buffer_ptr=tokenized["text_self_attention_masks"].data_ptr())
+    io_binding.bind_input(name='text_token_mask', device_type=device_type, device_id=0, element_type=bool, shape=tokenized["text_token_mask"].shape, buffer_ptr=tokenized["text_token_mask"].data_ptr())
     
     io_binding.bind_output(name='logits', device_type=device_type, device_id=0, element_type=np.float32, shape=binded_logits.shape, buffer_ptr=binded_logits.data_ptr())
     io_binding.bind_output(name='boxes', device_type=device_type, device_id=0, element_type=np.float32, shape=binded_boxes.shape, buffer_ptr=binded_boxes.data_ptr())
-    io_binding.bind_output(name='num_dets', device_type=device_type, device_id=0, element_type=np.int64, shape=(), buffer_ptr=binded_num_dets.data_ptr())
+    io_binding.bind_output(name='num_dets', device_type=device_type, device_id=0, element_type=np.int64, shape=(1, 1), buffer_ptr=binded_num_dets.data_ptr())
+    io_binding.bind_output(name='max_conf', device_type=device_type, device_id=0, element_type=np.float32, shape=(model.num_queries, ), buffer_ptr=binded_max_conf.data_ptr())
     sess.run_with_iobinding(io_binding)
+    import pdb; pdb.set_trace()
     with torch.no_grad():
         timer_pytorch = Timer(
             # The computation which will be run in a loop and timed.
-            stmt="model(image, input_ids, attention_mask, position_ids, token_type_ids, text_self_attention_masks)",
+            stmt="model(image, input_ids, attention_mask, position_ids, token_type_ids, text_token_mask)",
             setup="""
             """,
             
@@ -191,7 +208,7 @@ def export_onnx(model_cpu, model, image, caption, export_onnx_model, box_thresho
                 "attention_mask": tokenized["attention_mask"],
                 "position_ids": tokenized["position_ids"],
                 "token_type_ids": tokenized["token_type_ids"],
-                "text_self_attention_masks": tokenized["text_self_attention_masks"],
+                "text_token_mask": tokenized["text_token_mask"],
             },
             # Control the number of threads that PyTorch uses. (Default: 1)
             num_threads=1,
@@ -244,7 +261,7 @@ if __name__ == "__main__":
     model_cpu = load_model(config_file, checkpoint_path, cpu_only=True)
     output_dir = "/offboard/GroundingDINO/logs"
     image_path = "/offboard/GroundingDINO/.asset/zed2.png"
-    text_prompt = "bicycle. skateboard. door handle. luggage case. container. shoe box"
+    text_prompt = "bicycle. skateboard. door handle. luggage case. container. shoe box. bottle. human. car. bicycle. bike. table. chair. desk"
     
     image_pil, image = load_image(image_path)
     #export onnx and tensorrt engine
@@ -258,9 +275,4 @@ if __name__ == "__main__":
         "labels": pred_phrases,
     }
     image_with_box = plot_boxes_to_image(image_pil, pred_dict)[0]
-    image_with_box.save(os.path.join(output_dir, "pred.jpg"))
-    
-
-
-
-    
+    image_with_box.save(os.path.join(output_dir, "pred2.jpg"))
