@@ -53,6 +53,7 @@ class ModelWrapper(nn.Module):
             posmap[-1] = False
             non_zero_idx = posmap.nonzero(as_tuple=True)[0]
             pred_phrase =  self.model.tokenizer.decode(input_ids_raw[non_zero_idx])
+            import pdb; pdb.set_trace()
             pred_phrases.append(pred_phrase + f"({str(logit.max().item())[:4]})")
         return boxes[:num_dets], pred_phrases
 
@@ -112,6 +113,12 @@ def export_onnx(model_cpu, model, image, caption, export_onnx_model, box_thresho
     model = model.to(device)
     image = image.to(device)    # encoder texts
     tokenized = tokenize_text_prompt(model.tokenizer, caption, model.max_text_len, device)
+    cached_token_path = "/offboard/GroundingDINO/.asset/trt_cache/tokenized.pt"
+    tensor_dict = {key: t.cpu() for key, t in tokenized.items()}
+
+    # container = TensorContainer(tensor_dict)
+    torch.save(tensor_dict, cached_token_path)
+    import pdb; pdb.set_trace()
     dynamic_axes={
        "input_ids": {1: "seq_len"},
        "attention_mask": {1: "seq_len"},
@@ -133,7 +140,7 @@ def export_onnx(model_cpu, model, image, caption, export_onnx_model, box_thresho
             position_ids_cpu = tokenized["position_ids"].cpu()
             token_type_ids_cpu = tokenized["token_type_ids"].cpu()
             text_self_attention_masks_cpu = tokenized["text_token_mask"].cpu()
-            
+            import pdb; pdb.set_trace()
             logits, boxes, _, _ = model_wrapper(image_cpu, input_ids_cpu, attention_mask_cpu, position_ids_cpu, token_type_ids_cpu, text_self_attention_masks_cpu)
             torch.onnx.export(
                 model_wrapper,
@@ -172,11 +179,7 @@ def export_onnx(model_cpu, model, image, caption, export_onnx_model, box_thresho
     io_binding = sess.io_binding()
     device_type=image.device.type
     image = image[None]
-    cached_token_path = "/offboard/GroundingDINO/.asset/trt_cache/tokenized.pt"
-    tensor_dict = {key: t.cpu() for key, t in tokenized.items()}
-
-    # container = TensorContainer(tensor_dict)
-    torch.save(tensor_dict, cached_token_path)
+    
     binded_logits = torch.zeros((model.num_queries, model.max_text_len), dtype=torch.float32, device='cuda')
     binded_boxes  = torch.zeros((model.num_queries, 4), dtype=torch.float32, device='cuda')
     binded_num_dets = torch.zeros((1,), dtype=torch.int64, device='cuda')
@@ -193,7 +196,6 @@ def export_onnx(model_cpu, model, image, caption, export_onnx_model, box_thresho
     io_binding.bind_output(name='num_dets', device_type=device_type, device_id=0, element_type=np.int64, shape=(1, 1), buffer_ptr=binded_num_dets.data_ptr())
     io_binding.bind_output(name='max_conf', device_type=device_type, device_id=0, element_type=np.float32, shape=(model.num_queries, ), buffer_ptr=binded_max_conf.data_ptr())
     sess.run_with_iobinding(io_binding)
-    import pdb; pdb.set_trace()
     with torch.no_grad():
         timer_pytorch = Timer(
             # The computation which will be run in a loop and timed.
@@ -261,7 +263,7 @@ if __name__ == "__main__":
     model_cpu = load_model(config_file, checkpoint_path, cpu_only=True)
     output_dir = "/offboard/GroundingDINO/logs"
     image_path = "/offboard/GroundingDINO/.asset/zed2.png"
-    text_prompt = "bicycle. skateboard. door handle. luggage case. container. shoe box. bottle. human. car. bicycle. bike. table. chair. desk"
+    text_prompt = "skateboard. doorhandle. bottle. human. car. bicycle. bike. table. chair. desk"
     
     image_pil, image = load_image(image_path)
     #export onnx and tensorrt engine
