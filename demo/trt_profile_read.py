@@ -7,7 +7,9 @@ import sys
 logger = trt.Logger(trt.Logger.VERBOSE)
 
 # Path to your engine file (not profile file)
-engine_path = "/offboard/GroundingDINO/.asset/trt_cache/TensorrtExecutionProvider_TRTKernel_graph_main_graph_16549105544916672165_0_0_fp16_sm89.engine"
+engine_path = "/home/admin/.cache/huggingface/hub/models--dakey--GDinoTRT/gdino_trt_fp16.engine"
+# engine_path = "/offboard/GroundingDINO/.asset/trt_cache/TensorrtExecutionProvider_TRTKernel_graph_main_graph_16549105544916672165_0_0_fp16_sm89.engine"
+
 # or possibly with .plan extension if that's how it was saved
 
 # Check if the engine file exists

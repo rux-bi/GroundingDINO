@@ -53,7 +53,6 @@ class ModelWrapper(nn.Module):
             posmap[-1] = False
             non_zero_idx = posmap.nonzero(as_tuple=True)[0]
             pred_phrase =  self.model.tokenizer.decode(input_ids_raw[non_zero_idx])
-            import pdb; pdb.set_trace()
             pred_phrases.append(pred_phrase + f"({str(logit.max().item())[:4]})")
         return boxes[:num_dets], pred_phrases
 
@@ -118,7 +117,6 @@ def export_onnx(model_cpu, model, image, caption, export_onnx_model, box_thresho
 
     # container = TensorContainer(tensor_dict)
     torch.save(tensor_dict, cached_token_path)
-    import pdb; pdb.set_trace()
     dynamic_axes={
        "input_ids": {1: "seq_len"},
        "attention_mask": {1: "seq_len"},
@@ -140,7 +138,6 @@ def export_onnx(model_cpu, model, image, caption, export_onnx_model, box_thresho
             position_ids_cpu = tokenized["position_ids"].cpu()
             token_type_ids_cpu = tokenized["token_type_ids"].cpu()
             text_self_attention_masks_cpu = tokenized["text_token_mask"].cpu()
-            import pdb; pdb.set_trace()
             logits, boxes, _, _ = model_wrapper(image_cpu, input_ids_cpu, attention_mask_cpu, position_ids_cpu, token_type_ids_cpu, text_self_attention_masks_cpu)
             torch.onnx.export(
                 model_wrapper,
